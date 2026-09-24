@@ -43,3 +43,6 @@ evidence/run-local/
 # Generated governance drift reports
 governance/drift-report.json
 governance/drift-report.md
+# Generated governance control coverage reports
+governance/control-coverage-report.json
+governance/control-coverage-report.md

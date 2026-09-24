@@ -45,6 +45,9 @@ python tools/update_manifest.py --rules detections --output releases/current/man
 - CAB template: `governance/templates/cab-comment-template.md`
 - Oncall runbook: `docs/runbooks/soc-oncall-rollback.md`
 
+## Forecast Operations
+- Forecast build checklist (On-Call): `docs/runbooks/forecast-build-checklist.md`
+
 ## Rollback Tests
 - Unit tests: `python -m pytest -q tests/test_rollback.py`
 - CI smoke workflow: `.github/workflows/rollback-smoke.yml`

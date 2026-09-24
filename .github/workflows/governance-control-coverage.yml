@@ -1,0 +1,93 @@
+﻿name: Governance Control Coverage
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/CODEOWNERS'
+      - '.github/workflows/**'
+      - 'governance/**'
+      - 'tools/**'
+      - 'detections/**'
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  governance-control-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Analyze governance control coverage
+        id: coverage
+        shell: bash
+        run: |
+          set +e
+          python tools/analyze_governance_control_coverage.py --repo . --json-out governance/control-coverage-report.json --md-out governance/control-coverage-report.md
+          RC=$?
+          echo "exit_code=$RC" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Add coverage report to step summary
+        shell: bash
+        run: |
+          cat governance/control-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-control-coverage-report
+          path: |
+            governance/control-coverage-report.json
+            governance/control-coverage-report.md
+
+      - name: Comment coverage report on PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+            const fs = require('fs');
+            const body = fs.readFileSync('governance/control-coverage-report.md', 'utf8');
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body
+              });
+            } catch (error) {
+              const isPermissionIssue = error.status === 403 || /Resource not accessible by integration/i.test(error.message || '');
+              if (isPermissionIssue) {
+                core.warning(`Skipping PR comment due to token permissions: ${error.message}`);
+                return;
+              }
+              throw error;
+            }
+
+      - name: Enforce coverage gate
+        shell: bash
+        run: |
+          RC='${{ steps.coverage.outputs.exit_code }}'
+          if [ "$RC" = "2" ]; then
+            echo "Critical governance coverage gaps detected (exit 2). Blocking workflow."
+            exit 2
+          fi
+          if [ "$RC" = "1" ]; then
+            echo "Coverage warnings detected (exit 1). Non-blocking, review required."
+            exit 0
+          fi
+          echo "Governance control coverage is within target."

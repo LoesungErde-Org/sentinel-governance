@@ -1,0 +1,8 @@
+# Global fallback owner
+* @meyerchristiandringend-cpu
+
+# Governance-critical controls
+/.github/workflows/* @meyerchristiandringend-cpu
+/governance/** @meyerchristiandringend-cpu
+/tools/** @meyerchristiandringend-cpu
+/detections/** @meyerchristiandringend-cpu

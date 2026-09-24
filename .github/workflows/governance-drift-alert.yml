@@ -1,0 +1,81 @@
+﻿name: Governance Drift Alert
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/CODEOWNERS'
+      - '.github/workflows/**'
+      - 'governance/**'
+      - 'tools/**'
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  governance-drift-alert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run governance drift check
+        id: drift
+        shell: bash
+        run: |
+          set +e
+          python tools/check_governance_drift.py --repo . --json-out governance/drift-report.json --md-out governance/drift-report.md
+          RC=$?
+          echo "exit_code=$RC" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Add drift report to step summary
+        shell: bash
+        run: |
+          cat governance/drift-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload drift reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance-drift-report
+          path: |
+            governance/drift-report.json
+            governance/drift-report.md
+
+      - name: Comment drift report on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('governance/drift-report.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body
+            });
+
+      - name: Enforce drift gate
+        shell: bash
+        run: |
+          RC='${{ steps.drift.outputs.exit_code }}'
+          if [ "$RC" = "2" ]; then
+            echo "Critical governance drift detected (exit 2). CAB escalation required."
+            exit 2
+          fi
+          if [ "$RC" = "1" ]; then
+            echo "Governance drift detected (exit 1). Blocking this run."
+            exit 1
+          fi
+          echo "No governance drift detected."

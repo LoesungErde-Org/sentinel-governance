@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import argparse
 import subprocess
 from pathlib import Path
@@ -17,10 +17,12 @@ def verify_one(workflow_ref: str, file_path: str, sig_path: str, cert_path: str)
         if not Path(p).exists():
             raise FileNotFoundError(f'Missing required signature artifact: {p}')
 
+    if not workflow_ref.startswith('https://github.com/'):
+        workflow_ref = f'https://github.com/{workflow_ref}'
+
     cmd = [
         'cosign',
         'verify-blob',
-        '--yes',
         '--certificate-identity',
         workflow_ref,
         '--certificate-oidc-issuer',

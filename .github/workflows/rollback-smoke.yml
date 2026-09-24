@@ -1,4 +1,4 @@
-﻿name: Rollback Smoke Test
+name: Rollback Smoke Test
 
 on:
   workflow_dispatch:
@@ -37,16 +37,16 @@ jobs:
           echo "snap-win" > governance/snapshot/detections/windows/rules/generated/rule-win.yaml
           echo "snap-linux" > governance/snapshot/detections/linux/rules/generated/rule-linux.yaml
           python - <<'PY'
-
-base = pathlib.Path('governance/snapshot')
-checks = {}
-for p in base.rglob('*'):
-    if p.is_file():
-        rel = str(p.relative_to(base)).replace('\\','/')
-        checks[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
-manifest = {'id':'smoke-snap','git_commit':'fixture','timestamp':'smoke','checksums':checks}
-pathlib.Path('governance/selected_snapshot.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-PY
+          import hashlib, json, pathlib
+          base = pathlib.Path('governance/snapshot')
+          checks = {}
+          for p in base.rglob('*'):
+              if p.is_file():
+                  rel = str(p.relative_to(base)).replace('\\','/')
+                  checks[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+          manifest = {'id':'smoke-snap','git_commit':'fixture','timestamp':'smoke','checksums':checks}
+          pathlib.Path('governance/selected_snapshot.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          PY
 
       - name: Run rollback script (first run)
         run: |

@@ -30,6 +30,10 @@ def test_verify_one_uses_supported_cosign_verify_flags(
     command = captured["command"]
     assert command[:2] == ["cosign", "verify-blob"]
     assert "--yes" not in command
-    assert "--certificate-identity" in command
+    identity_index = command.index("--certificate-identity")
+    assert command[identity_index + 1] == (
+        "https://github.com/LoesungErde-Org/sentinel-governance/"
+        ".github/workflows/detections-ci.yml@refs/heads/main"
+    )
     assert "--certificate-oidc-issuer" in command
     assert captured["check"] is True

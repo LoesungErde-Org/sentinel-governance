@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import argparse
 import subprocess
 from pathlib import Path
@@ -20,7 +20,6 @@ def verify_one(workflow_ref: str, file_path: str, sig_path: str, cert_path: str)
     cmd = [
         'cosign',
         'verify-blob',
-        '--yes',
         '--certificate-identity',
         workflow_ref,
         '--certificate-oidc-issuer',

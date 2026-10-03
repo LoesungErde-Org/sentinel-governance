@@ -1,93 +1,62 @@
-﻿name: Governance Control Coverage
-
-on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/CODEOWNERS'
-      - '.github/workflows/**'
-      - 'governance/**'
-      - 'tools/**'
-      - 'detections/**'
-  schedule:
-    - cron: '0 5 * * 1'
-  workflow_dispatch:
-
+name: Governance Control Coverage
 permissions:
   contents: read
-  pull-requests: write
-
 jobs:
   governance-control-coverage:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Analyze governance control coverage
-        id: coverage
-        shell: bash
-        run: |
-          set +e
-          python tools/analyze_governance_control_coverage.py --repo . --json-out governance/control-coverage-report.json --md-out governance/control-coverage-report.md
-          RC=$?
-          echo "exit_code=$RC" >> "$GITHUB_OUTPUT"
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Analyze governance control coverage
+      id: coverage
+      shell: bash
+      run: |
+        set +e
+        python tools/analyze_governance_control_coverage.py --repo . --json-out governance/control-coverage-report.json --md-out governance/control-coverage-report.md
+        RC=$?
+        echo "exit_code=$RC" >> "$GITHUB_OUTPUT"
+        exit 0
+    - name: Add coverage report to step summary
+      shell: bash
+      run: |
+        cat governance/control-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: governance-control-coverage-report
+        path: |
+          governance/control-coverage-report.json
+          governance/control-coverage-report.md
+    - name: Enforce coverage gate
+      shell: bash
+      run: |
+        RC='${{ steps.coverage.outputs.exit_code }}'
+        if [ "$RC" = "2" ]; then
+          echo "Critical governance coverage gaps detected (exit 2). Blocking workflow."
+          exit 2
+        fi
+        if [ "$RC" = "1" ]; then
+          echo "Coverage warnings detected (exit 1). Non-blocking, review required."
           exit 0
-
-      - name: Add coverage report to step summary
-        shell: bash
-        run: |
-          cat governance/control-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload coverage reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: governance-control-coverage-report
-          path: |
-            governance/control-coverage-report.json
-            governance/control-coverage-report.md
-
-      - name: Comment coverage report on PR
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const core = require('@actions/core');
-            const fs = require('fs');
-            const body = fs.readFileSync('governance/control-coverage-report.md', 'utf8');
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body
-              });
-            } catch (error) {
-              const isPermissionIssue = error.status === 403 || /Resource not accessible by integration/i.test(error.message || '');
-              if (isPermissionIssue) {
-                core.warning(`Skipping PR comment due to token permissions: ${error.message}`);
-                return;
-              }
-              throw error;
-            }
-
-      - name: Enforce coverage gate
-        shell: bash
-        run: |
-          RC='${{ steps.coverage.outputs.exit_code }}'
-          if [ "$RC" = "2" ]; then
-            echo "Critical governance coverage gaps detected (exit 2). Blocking workflow."
-            exit 2
-          fi
-          if [ "$RC" = "1" ]; then
-            echo "Coverage warnings detected (exit 1). Non-blocking, review required."
-            exit 0
-          fi
-          echo "Governance control coverage is within target."
+        fi
+        echo "Governance control coverage is within target."
+    timeout-minutes: 20
+'on':
+  pull_request:
+    branches:
+    - main
+    paths:
+    - .github/CODEOWNERS
+    - .github/workflows/**
+    - governance/**
+    - tools/**
+    - detections/**
+  schedule:
+  - cron: 0 5 * * 1
+  workflow_dispatch: null

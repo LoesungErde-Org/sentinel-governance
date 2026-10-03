@@ -1,79 +1,77 @@
 name: Rollback Smoke Test
-
-on:
-  workflow_dispatch:
-
 jobs:
   rollback-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r tools/requirements-dev.txt
-
-      - name: Prepare fixture repo state
-        run: |
-          mkdir -p detections/windows/rules/generated
-          mkdir -p detections/linux/rules/generated
-          echo "orig-windows" > detections/windows/rules/generated/orig-win.yaml
-          echo "orig-linux" > detections/linux/rules/generated/orig-linux.yaml
-
-      - name: Prepare snapshot fixture
-        run: |
-          rm -rf governance
-          mkdir -p governance/snapshot/detections/windows/rules/generated
-          mkdir -p governance/snapshot/detections/linux/rules/generated
-          echo "snap-win" > governance/snapshot/detections/windows/rules/generated/rule-win.yaml
-          echo "snap-linux" > governance/snapshot/detections/linux/rules/generated/rule-linux.yaml
-          python - <<'PY'
-          import hashlib, json, pathlib
-          base = pathlib.Path('governance/snapshot')
-          checks = {}
-          for p in base.rglob('*'):
-              if p.is_file():
-                  rel = str(p.relative_to(base)).replace('\\','/')
-                  checks[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
-          manifest = {'id':'smoke-snap','git_commit':'fixture','timestamp':'smoke','checksums':checks}
-          pathlib.Path('governance/selected_snapshot.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-          PY
-
-      - name: Run rollback script (first run)
-        run: |
-          python tools/rollback_from_snapshot.py --snapshot-dir governance/snapshot --manifest governance/selected_snapshot.json
-
-      - name: Assert restored files present
-        run: |
-          test -f detections/windows/rules/generated/rule-win.yaml
-          test -f detections/linux/rules/generated/rule-linux.yaml
-
-      - name: Run rollback script (second run idempotence)
-        run: |
-          python tools/rollback_from_snapshot.py --snapshot-dir governance/snapshot --manifest governance/selected_snapshot.json
-
-      - name: Inject mid-swap failure
-        run: |
-          FAILURE_HOOK=mid-swap python tools/rollback_from_snapshot.py --snapshot-dir governance/snapshot --manifest governance/selected_snapshot.json || true
-
-      - name: Confirm restore executed
-        run: |
-          grep -q '"status": "rollback_restore"' governance/rollback_audit.json
-
-      - name: Check backups exist
-        run: |
-          test -d detections_backup
-          test "$(find detections_backup -type f | wc -l)" -gt 0
-
-      - name: Run unit tests
-        run: |
-          python -m pytest -q tests/test_rollback.py tests/test_rollback_mid_swap.py
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Install test deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r tools/requirements-dev.txt
+    - name: Prepare fixture repo state
+      run: |
+        mkdir -p detections/windows/rules/generated
+        mkdir -p detections/linux/rules/generated
+        echo "orig-windows" > detections/windows/rules/generated/orig-win.yaml
+        echo "orig-linux" > detections/linux/rules/generated/orig-linux.yaml
+    - name: Prepare snapshot fixture
+      run: |
+        rm -rf governance
+        mkdir -p governance/snapshot/detections/windows/rules/generated
+        mkdir -p governance/snapshot/detections/linux/rules/generated
+        echo "snap-win" > governance/snapshot/detections/windows/rules/generated/rule-win.yaml
+        echo "snap-linux" > governance/snapshot/detections/linux/rules/generated/rule-linux.yaml
+        python - <<'PY'
+        import hashlib, json, pathlib
+        base = pathlib.Path('governance/snapshot')
+        checks = {}
+        for p in base.rglob('*'):
+            if p.is_file():
+                rel = str(p.relative_to(base)).replace('\\','/')
+                checks[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+        manifest = {'id':'smoke-snap','git_commit':'fixture','timestamp':'smoke','checksums':checks}
+        pathlib.Path('governance/selected_snapshot.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+        PY
+    - name: Run rollback script (first run)
+      run: |
+        python tools/rollback_from_snapshot.py --snapshot-dir governance/snapshot --manifest governance/selected_snapshot.json
+    - name: Assert restored files present
+      run: |
+        test -f detections/windows/rules/generated/rule-win.yaml
+        test -f detections/linux/rules/generated/rule-linux.yaml
+    - name: Run rollback script (second run idempotence)
+      run: |
+        python tools/rollback_from_snapshot.py --snapshot-dir governance/snapshot --manifest governance/selected_snapshot.json
+    - name: Inject mid-swap failure
+      run: |
+        FAILURE_HOOK=mid-swap python tools/rollback_from_snapshot.py --snapshot-dir governance/snapshot --manifest governance/selected_snapshot.json || true
+    - name: Confirm restore executed
+      run: |
+        grep -q '"status": "rollback_restore"' governance/rollback_audit.json
+    - name: Check backups exist
+      run: |
+        test -d detections_backup
+        test "$(find detections_backup -type f | wc -l)" -gt 0
+    - name: Run unit tests
+      run: |
+        python -m pytest -q tests/test_rollback.py tests/test_rollback_mid_swap.py
+    timeout-minutes: 20
+'on':
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+  workflow_dispatch: null
+permissions:
+  contents: read

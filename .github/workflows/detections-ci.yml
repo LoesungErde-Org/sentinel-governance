@@ -1,281 +1,390 @@
-﻿name: Detection CI
-
-on:
-  push:
-    paths:
-      - 'detections/**'
-      - 'templates/**'
-      - 'tools/**'
-      - 'docs/**'
-      - '.github/workflows/detections-ci.yml'
-  pull_request:
-    paths:
-      - 'detections/**'
-      - 'templates/**'
-      - 'tools/**'
-      - 'docs/**'
-      - '.github/workflows/detections-ci.yml'
-
+name: Detection CI
 permissions:
-  id-token: write
-  contents: write
-  pull-requests: write
-
+  contents: read
 jobs:
   expand-and-validate:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install jsonschema pyyaml
-
-      - name: Expand MITRE Templates
-        run: |
-          python tools/expand_mitre_templates.py \
-            --input templates/mitre-techniques \
-            --output detections
-
-      - name: Validate Detection Rule Schema
-        run: |
-          python tools/validate_detection_rules.py \
-            --schema docs/detection-rule.schema.json \
-            --rules-root detections
-
-      - name: Generate MITRE Coverage Heatmap
-        run: |
-          python tools/generate_coverage_heatmap.py
-          python tools/generate_coverage_heatmap_md.py
-
-      - name: Update Release Manifest
-        run: |
-          python tools/update_manifest.py \
-            --rules detections \
-            --output releases/current/manifest.json \
-            --release current
-
-      - name: Upload Governance Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: governance-artifacts
-          path: |
-            governance/mitre-coverage.json
-            governance/mitre-heatmap.md
-            releases/current/manifest.json
-
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Install dependencies
+      run: pip install jsonschema pyyaml
+    - name: Expand MITRE Templates
+      run: |
+        python tools/expand_mitre_templates.py \
+          --input templates/mitre-techniques \
+          --output detections
+    - name: Validate Detection Rule Schema
+      run: |
+        python tools/validate_detection_rules.py \
+          --schema docs/detection-rule.schema.json \
+          --rules-root detections
+    - name: Generate MITRE Coverage Heatmap
+      run: |
+        python tools/generate_coverage_heatmap.py
+        python tools/generate_coverage_heatmap_md.py
+    - name: Update Release Manifest
+      run: |
+        python tools/update_manifest.py \
+          --rules detections \
+          --output releases/current/manifest.json \
+          --release current
+    - name: Upload Governance Artifacts
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: governance-artifacts
+        path: |
+          governance/mitre-coverage.json
+          governance/mitre-heatmap.md
+          releases/current/manifest.json
+    timeout-minutes: 20
   compile-rules:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: expand-and-validate
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Install deps
+      run: pip install pyyaml jsonschema
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      with:
+        cosign-release: v2.6.5
+    - name: Compile Rules (with hooks)
+      run: |
+        python tools/rule_compiler.py \
+          --template templates/mitre-techniques/T1110-password-spray.compiler.json \
+          --params tools/rule_params.example.yaml \
+          --repo . \
+          --snapshot \
+          --forecast \
+          --compiled-output governance/compiled-rules.json
+    - name: Validate compiled rules
+      run: |
+        python tools/validate_detection_rules.py --path detections
+    - name: Regenerate coverage after compile
+      run: |
+        python tools/generate_coverage_heatmap.py
+        python tools/generate_coverage_heatmap_md.py
+    - name: Refresh forecast with latest coverage
+      run: |
+        python tools/forecast_hook.py \
+          --compiled governance/compiled-rules.json \
+          --coverage governance/mitre-coverage.json \
+          --previous-coverage governance/baselines/mitre-coverage.snapshot.json \
+          --output governance/forecast.json
+    - name: Validate forecast schema
+      run: |
+        python tools/validate_json.py \
+          --schema tools/forecast.schema.json \
+          --input governance/forecast.json
+    - name: Render CAB report
+      run: |
+        python tools/render_cab_report.py \
+          --forecast governance/forecast.json \
+          --output governance/cab-report.md
+    - name: Build production deployment templates
+      run: |-
+        python tools/build_deployment.py build
+        python tools/build_deployment.py verify
+    - name: Build rollback snapshot package
+      run: |
+        mkdir -p governance/snapshots/current
+        tar -czf governance/snapshots/current/snapshot.tar.gz detections governance/baselines/detection-snapshot.json governance/compiled-rules.json governance/forecast.json deploy
+    - name: Prepare signature dirs
+      run: mkdir -p governance/signatures
+    - name: Compute digests
+      shell: bash
+      run: |
+        sha256sum governance/forecast.json | tee governance/signatures/forecast.json.sha256
+        sha256sum governance/baselines/detection-snapshot.json | tee governance/signatures/detection-snapshot.json.sha256
+        sha256sum governance/compiled-rules.json | tee governance/signatures/compiled-rules.json.sha256
+        sha256sum governance/cab-report.md | tee governance/signatures/cab-report.md.sha256
+        sha256sum governance/snapshots/current/snapshot.tar.gz | tee governance/signatures/snapshot.tar.gz.sha256
+    - name: Sign blobs with GitHub OIDC (keyless)
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: '1'
+      run: |
+        cosign sign-blob --yes \
+          --output-certificate governance/signatures/forecast.json.pem \
+          --output-signature governance/signatures/forecast.json.sig \
+          governance/forecast.json
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+        cosign sign-blob --yes \
+          --output-certificate governance/signatures/detection-snapshot.json.pem \
+          --output-signature governance/signatures/detection-snapshot.json.sig \
+          governance/baselines/detection-snapshot.json
 
-      - name: Install deps
-        run: pip install pyyaml jsonschema
+        cosign sign-blob --yes \
+          --output-certificate governance/signatures/compiled-rules.json.pem \
+          --output-signature governance/signatures/compiled-rules.json.sig \
+          governance/compiled-rules.json
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3.5.0
+        cosign sign-blob --yes \
+          --output-certificate governance/signatures/cab-report.md.pem \
+          --output-signature governance/signatures/cab-report.md.sig \
+          governance/cab-report.md
 
-      - name: Compile Rules (with hooks)
-        run: |
-          python tools/rule_compiler.py \
-            --template templates/mitre-techniques/T1110-password-spray.compiler.json \
-            --params tools/rule_params.example.yaml \
-            --repo . \
-            --snapshot \
-            --forecast \
-            --compiled-output governance/compiled-rules.json
+        cosign sign-blob --yes \
+          --output-certificate governance/signatures/snapshot.tar.gz.pem \
+          --output-signature governance/signatures/snapshot.tar.gz.sig \
+          governance/snapshots/current/snapshot.tar.gz
+    - name: Generate signature index
+      run: |
+        python tools/generate_signature_index.py \
+          --output governance/signatures/index.json \
+          --workflow-ref "${{ github.workflow_ref }}" \
+          --include-cab \
+          --include-snapshot
+    - name: Verify signatures (Gate)
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: '1'
+      run: |
+        python tools/verify_signatures.py \
+          --workflow-ref "${{ github.workflow_ref }}" \
+          --include-cab
+    - name: Verify rollback snapshot signature
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: '1'
+      run: |
+        python tools/verify_signatures.py \
+          --workflow-ref "${{ github.workflow_ref }}" \
+          --artifact governance/snapshots/current/snapshot.tar.gz \
+          --signature governance/signatures/snapshot.tar.gz.sig \
+          --certificate governance/signatures/snapshot.tar.gz.pem
+    - name: Update manifest after compile
+      run: |
+        python tools/update_manifest.py \
+          --rules detections \
+          --output releases/current/manifest.json \
+          --release current \
+          --signatures-index governance/signatures/index.json
+    - name: Add CAB report to step summary
+      run: |
+        cat governance/cab-report.md >> "$GITHUB_STEP_SUMMARY"
+    - name: Upload CAB artifacts
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: cab-artifacts
+        path: |
+          governance/compiled-rules.json
+          governance/forecast.json
+          governance/cab-report.md
+          governance/baselines/detection-snapshot.json
+          governance/baselines/mitre-coverage.snapshot.json
+          governance/snapshots/current/snapshot.tar.gz
+          governance/signatures/index.json
+          governance/signatures/*.sha256
+          governance/signatures/*.sig
+          governance/signatures/*.pem
+          releases/current/manifest.json
 
-      - name: Validate compiled rules
-        run: |
-          python tools/validate_detection_rules.py --path detections
-
-      - name: Regenerate coverage after compile
-        run: |
-          python tools/generate_coverage_heatmap.py
-          python tools/generate_coverage_heatmap_md.py
-
-      - name: Refresh forecast with latest coverage
-        run: |
-          python tools/forecast_hook.py \
-            --compiled governance/compiled-rules.json \
-            --coverage governance/mitre-coverage.json \
-            --previous-coverage governance/baselines/mitre-coverage.snapshot.json \
-            --output governance/forecast.json
-
-      - name: Validate forecast schema
-        run: |
-          python tools/validate_json.py \
-            --schema tools/forecast.schema.json \
-            --input governance/forecast.json
-
-      - name: Render CAB report
-        run: |
-          python tools/render_cab_report.py \
-            --forecast governance/forecast.json \
-            --output governance/cab-report.md
-
-      - name: Build rollback snapshot package
-        run: |
-          mkdir -p governance/snapshots/current
-          tar -czf governance/snapshots/current/snapshot.tar.gz detections governance/baselines/detection-snapshot.json governance/compiled-rules.json governance/forecast.json
-
-      - name: Prepare signature dirs
-        run: mkdir -p governance/signatures
-
-      - name: Compute digests
-        shell: bash
-        run: |
-          sha256sum governance/forecast.json | tee governance/signatures/forecast.json.sha256
-          sha256sum governance/baselines/detection-snapshot.json | tee governance/signatures/detection-snapshot.json.sha256
-          sha256sum governance/compiled-rules.json | tee governance/signatures/compiled-rules.json.sha256
-          sha256sum governance/cab-report.md | tee governance/signatures/cab-report.md.sha256
-          sha256sum governance/snapshots/current/snapshot.tar.gz | tee governance/signatures/snapshot.tar.gz.sha256
-
-      - name: Sign blobs with GitHub OIDC (keyless)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: '1'
-        run: |
-          cosign sign-blob --yes \
-            --output-certificate governance/signatures/forecast.json.pem \
-            --output-signature governance/signatures/forecast.json.sig \
-            governance/forecast.json
-
-          cosign sign-blob --yes \
-            --output-certificate governance/signatures/detection-snapshot.json.pem \
-            --output-signature governance/signatures/detection-snapshot.json.sig \
-            governance/baselines/detection-snapshot.json
-
-          cosign sign-blob --yes \
-            --output-certificate governance/signatures/compiled-rules.json.pem \
-            --output-signature governance/signatures/compiled-rules.json.sig \
-            governance/compiled-rules.json
-
-          cosign sign-blob --yes \
-            --output-certificate governance/signatures/cab-report.md.pem \
-            --output-signature governance/signatures/cab-report.md.sig \
-            governance/cab-report.md
-
-          cosign sign-blob --yes \
-            --output-certificate governance/signatures/snapshot.tar.gz.pem \
-            --output-signature governance/signatures/snapshot.tar.gz.sig \
-            governance/snapshots/current/snapshot.tar.gz
-
-      - name: Generate signature index
-        run: |
-          python tools/generate_signature_index.py \
-            --output governance/signatures/index.json \
-            --workflow-ref "${{ github.workflow_ref }}" \
-            --include-cab \
-            --include-snapshot
-
-      - name: Verify signatures (Gate)
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: '1'
-        run: |
-          python tools/verify_signatures.py \
-            --workflow-ref "${{ github.workflow_ref }}" \
-            --include-cab
-
-      - name: Verify rollback snapshot signature
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: '1'
-        run: |
-          python tools/verify_signatures.py \
-            --workflow-ref "${{ github.workflow_ref }}" \
-            --artifact governance/snapshots/current/snapshot.tar.gz \
-            --signature governance/signatures/snapshot.tar.gz.sig \
-            --certificate governance/signatures/snapshot.tar.gz.pem
-
-      - name: Update manifest after compile
-        run: |
-          python tools/update_manifest.py \
-            --rules detections \
-            --output releases/current/manifest.json \
-            --release current \
-            --signatures-index governance/signatures/index.json
-
-      - name: Add CAB report to step summary
-        run: |
-          cat governance/cab-report.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Comment CAB report on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('governance/cab-report.md', 'utf8');
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
-
-      - name: Risk gate
-        run: |
-          python tools/risk_gate.py \
-            --forecast governance/forecast.json \
-            --verify-signatures \
-            --workflow-ref "${{ github.workflow_ref }}" \
-            --include-cab \
-            --fail-on-block
-
-      - name: Upload CAB artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: cab-artifacts
-          path: |
-            governance/compiled-rules.json
-            governance/forecast.json
-            governance/cab-report.md
-            governance/baselines/detection-snapshot.json
-            governance/baselines/mitre-coverage.snapshot.json
-            governance/snapshots/current/snapshot.tar.gz
-            governance/signatures/index.json
-            governance/signatures/*.sha256
-            governance/signatures/*.sig
-            governance/signatures/*.pem
-            releases/current/manifest.json
-
+          detections/
+          deploy/
+        if-no-files-found: error
+        retention-days: 90
+      id: cab-artifacts
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      artifact-id: ${{ steps.cab-artifacts.outputs.artifact-id }}
   deploy:
-    needs: [expand-and-validate, compile-rules]
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        pack: [identity, endpoint, cloud, network]
-
+    needs:
+    - compile-rules
+    - detection-validation
+    - forecast-schema-validation
+    - risk-gate
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: sentinel-production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      WORKSPACE: ${{ vars.SENTINEL_WORKSPACE }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Deploy Pack
-        run: |
-          az deployment group create \
-            --resource-group "$RG" \
-            --template-file "deploy/${{ matrix.pack }}/analyticRules.bicep" \
-            --parameters workspaceName="$WORKSPACE"
-        env:
-          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          WORKSPACE: ${{ secrets.SENTINEL_WORKSPACE }}
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Require configured Azure target before login
+      shell: bash
+      run: |-
+        for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID RG WORKSPACE; do
+          test -n "${!name}" || { echo "Missing production variable: $name"; exit 1; }
+        done
+    - name: Download this run's verified artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ needs.compile-rules.outputs.artifact-id }}
+        path: .
+        merge-multiple: true
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      with:
+        cosign-release: v2.6.5
+    - name: Verify signed deployment snapshot
+      env:
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: |-
+        python -m pip install -r tools/requirements.txt
+        python tools/verify_signatures.py --workflow-ref "$WORKFLOW_REF" --artifact governance/snapshots/current/snapshot.tar.gz --signature governance/signatures/snapshot.tar.gz.sig --certificate governance/signatures/snapshot.tar.gz.pem
+        python tools/build_deployment.py extract --snapshot governance/snapshots/current/snapshot.tar.gz --output verified-release
+    - name: Azure OIDC login
+      uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+      with:
+        client-id: ${{ env.AZURE_CLIENT_ID }}
+        tenant-id: ${{ env.AZURE_TENANT_ID }}
+        subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+    - name: Validate every production pack before applying any pack
+      shell: bash
+      run: |-
+        for template in verified-release/deploy/*/analyticRules.json; do
+          az deployment group validate --resource-group "$RG" --template-file "$template" --parameters workspaceName="$WORKSPACE"
+          az deployment group what-if --resource-group "$RG" --template-file "$template" --parameters workspaceName="$WORKSPACE"
+        done
+    - name: Deploy verified production resources
+      shell: bash
+      run: |-
+        for template in verified-release/deploy/*/analyticRules.json; do
+          az deployment group create --resource-group "$RG" --template-file "$template" --parameters workspaceName="$WORKSPACE"
+        done
+  detection-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: compile-rules
+    if: always()
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Require successful producer
+      env:
+        PRODUCER_RESULT: ${{ needs.compile-rules.result }}
+      run: test "$PRODUCER_RESULT" = success
+    - name: Download this run's verified artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ needs.compile-rules.outputs.artifact-id }}
+        path: .
+        merge-multiple: true
+    - run: python -m pip install -r tools/requirements-dev.txt
+    - name: Validate gate
+      env:
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: |-
+        python tools/validate_detection_rules.py --path detections
+        python tools/build_deployment.py verify
+        python -m pytest -q
+  forecast-schema-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: compile-rules
+    if: always()
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Require successful producer
+      env:
+        PRODUCER_RESULT: ${{ needs.compile-rules.result }}
+      run: test "$PRODUCER_RESULT" = success
+    - name: Download this run's verified artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ needs.compile-rules.outputs.artifact-id }}
+        path: .
+        merge-multiple: true
+    - run: python -m pip install -r tools/requirements-dev.txt
+    - name: Validate gate
+      env:
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: python tools/validate_json.py --schema tools/forecast.schema.json --input governance/forecast.json
+  risk-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: compile-rules
+    if: always()
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - name: Require successful producer
+      env:
+        PRODUCER_RESULT: ${{ needs.compile-rules.result }}
+      run: test "$PRODUCER_RESULT" = success
+    - name: Download this run's verified artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ needs.compile-rules.outputs.artifact-id }}
+        path: .
+        merge-multiple: true
+    - run: python -m pip install -r tools/requirements-dev.txt
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      with:
+        cosign-release: v2.6.5
+    - name: Validate gate
+      env:
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: python tools/risk_gate.py --forecast governance/forecast.json --verify-signatures --workflow-ref "$WORKFLOW_REF"
+        --include-cab --fail-on-block
+'on':
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the signed prod packs after environment approval
+        type: boolean
+        default: false
+        required: true
+concurrency:
+  group: detection-ci-${{ github.ref }}
+  cancel-in-progress: false

@@ -1,0 +1,28 @@
+name: Governance Source Guard
+'on':
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+permissions:
+  contents: read
+jobs:
+  governance-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Setup Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - run: python -m pip install -r tools/requirements-dev.txt
+    - name: Validate mandatory CI and branch policy source
+      run: |-
+        python tools/validate_branch_policy.py
+        python tools/check_governance_drift.py --repo .
+        python -m pytest -q tests/test_branch_policy.py
